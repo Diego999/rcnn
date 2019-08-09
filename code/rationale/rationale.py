@@ -378,8 +378,7 @@ class Model(object):
 
         eval_generator = theano.function(
                 inputs = [ self.x, self.y ],
-                outputs = [ self.z, self.generator.obj, self.generator.loss,
-                                self.encoder.pred_diff ],
+                outputs = [ self.z, self.generator.obj, self.generator.loss, self.encoder.pred_diff , self.encoder.preds, self.encoder.y],
                 givens = {
                     self.z : self.generator.z_pred
                 },
@@ -459,8 +458,8 @@ class Model(object):
 
                     if dev:
                         self.dropout.set_value(0.0)
-                        dev_obj, dev_loss, dev_diff, dev_p1 = self.evaluate_data(
-                                dev_batches_x, dev_batches_y, eval_generator, sampling=True)
+                        dev_obj, dev_loss, dev_diff, dev_p1, all_preds, all_trues, all_zs, all_texts = self.evaluate_data(
+                                dev_batches_x, dev_batches_y, eval_generator, sampling=True, dump=True)
 
                         if dev_obj < best_dev:
                             best_dev = dev_obj
@@ -497,15 +496,27 @@ class Model(object):
 
 
 
-    def evaluate_data(self, batches_x, batches_y, eval_func, sampling=False):
+    def evaluate_data(self, batches_x, batches_y, eval_func, sampling=False, dump=False):
         padding_id = self.embedding_layer.vocab_map["<padding>"]
         tot_obj, tot_mse, tot_diff, p1 = 0.0, 0.0, 0.0, 0.0
+        all_preds = []
+        all_trues = []
+        all_zs = []
+        all_texts = []
         for bx, by in zip(batches_x, batches_y):
             if not sampling:
                 e, d = eval_func(bx, by)
             else:
                 mask = bx != padding_id
-                bz, o, e, d = eval_func(bx, by)
+                if not dump:
+                    bz, o, e, d = eval_func(bx, by)
+                else:
+                    bz, o, e, d, preds, trues = eval_func(bx, by)
+                    all_preds.append([x[int(args.aspect)] for x in preds.tolist()])
+                    all_trues.append([x[int(args.aspect)] for x in trues.tolist()])
+                    all_zs.append(bz.T.tolist())
+                    all_texts.append([self.embedding_layer.map_to_words(xx) for xx in bx.T.tolist()])
+
                 p1 += np.sum(bz*mask) / (np.sum(mask) + 1e-8)
                 tot_obj += o
             tot_mse += e
@@ -513,7 +524,7 @@ class Model(object):
         n = len(batches_x)
         if not sampling:
             return tot_mse/n, tot_diff/n
-        return tot_obj/n, tot_mse/n, tot_diff/n, p1/n
+        return tot_obj/n, tot_mse/n, tot_diff/n, p1/n, all_preds, all_trues, all_zs, all_texts
 
     def evaluate_rationale(self, reviews, batches_x, batches_y, eval_func):
         args = self.args
@@ -630,7 +641,7 @@ def main():
         eval_func = theano.function(
                 inputs = [ model.x, model.y ],
                 outputs = [ model.z, model.generator.obj, model.generator.loss,
-                                model.encoder.pred_diff ],
+                                model.encoder.pred_diff, model.encoder.preds, model.encoder.y],
                 givens = {
                     model.z : model.generator.z_pred
                 },
@@ -648,13 +659,14 @@ def main():
         # batching data
         padding_id = embedding_layer.vocab_map["<padding>"]
         dev_batches_x, dev_batches_y = myio.create_batches(
-                        dev_x, dev_y, args.batch, padding_id
+                        dev_x, dev_y, args.batch, padding_id, sort=False
                     )
 
         # disable dropout
         model.dropout.set_value(0.0)
-        dev_obj, dev_loss, dev_diff, dev_p1 = model.evaluate_data(
-                dev_batches_x, dev_batches_y, eval_func, sampling=True)
+        dev_obj, dev_loss, dev_diff, dev_p1, all_preds, all_trues, all_zs, all_texts = model.evaluate_data(
+                dev_batches_x, dev_batches_y, eval_func, sampling=True, dump=True)
+        pickle.dump([all_preds, all_trues, all_zs, all_texts], open(args.dump.replace('json', 'pkl'), 'wb'), protocol = pickle.HIGHEST_PROTOCOL)
         say("{} {} {} {}\n".format(dev_obj, dev_loss, dev_diff, dev_p1))
 
 
